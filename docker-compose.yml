@@ -1,5 +1,7 @@
 version: "3.9"
 
+# docker compose up --scale spark-worker=3
+
 services:
 
   fastapi:
@@ -80,6 +82,50 @@ services:
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_LOG4J_ROOT_LOGLEVEL: ERROR
+
+    volumes:
+      - .:/app
+
+  spark-master:
+    image: apache/spark:3.5.1
+    container_name: spark-master
+
+    command: >
+      bash -c "
+        /opt/spark/sbin/start-master.sh &&
+        sleep 10 &&
+        mkdir -p /tmp/.ivy2 &&
+        /opt/spark/bin/spark-submit --master spark://spark-master:7077 --conf spark.jars.ivy=/tmp/.ivy2 --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1 /app/app/streaming/spark_stream.py
+      "
+
+    environment:
+      - SPARK_MODE=master
+
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+
+    volumes:
+      - .:/app
+
+  spark-worker:
+    image: apache/spark:3.5.1
+
+    depends_on:
+      - spark-master
+
+    command: >
+      /opt/spark/bin/spark-class
+      org.apache.spark.deploy.worker.Worker
+      spark://spark-master:7077
+
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+
+      # opcional
+      - SPARK_WORKER_MEMORY=2G
+      - SPARK_WORKER_CORES=2
 
     volumes:
       - .:/app
