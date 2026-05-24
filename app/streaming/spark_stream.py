@@ -1,5 +1,5 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, from_json, window, count, to_timestamp, when, lit, expr, abs
+from pyspark.sql.functions import col, from_json, window, count, to_timestamp, when, lit, expr, abs, pandas_udf, hour as spark_hour
 from pyspark.sql.types import (
     StructType,
     StructField,
@@ -7,6 +7,17 @@ from pyspark.sql.types import (
     DoubleType,
     TimestampType
 )
+
+import pandas as pd
+import numpy as np
+import io
+import torch
+import torch.nn as nn
+import joblib
+
+import sys
+sys.path.insert(0, "/app")
+
 
 # ─────────────────────────────────────────────
 # Spark Session
@@ -19,6 +30,68 @@ spark = (
 )
 
 spark.sparkContext.setLogLevel("ERROR")
+
+# ─────────────────────────────────────────────
+# Modelo ML — broadcast a workers                                    # ← NUEVO
+# ─────────────────────────────────────────────
+
+model_bytes = open("/app/app/model.pt", "rb").read()                # ← NUEVO
+scaler      = joblib.load("/app/app/scaler.pkl")                    # ← NUEVO
+
+bc_model_bytes = spark.sparkContext.broadcast(model_bytes)          # ← NUEVO
+bc_scaler      = spark.sparkContext.broadcast(scaler)               # ← NUEVO
+
+# ─────────────────────────────────────────────
+# UDF de inferencia ML (MAP por partition)                           # ← NUEVO
+# ─────────────────────────────────────────────
+
+TX_TYPE_MAP = {"TRANSFER": 0, "PAYMENT": 1, "WITHDRAWAL": 2, "DEPOSIT": 3}  # ← NUEVO
+
+@pandas_udf(DoubleType())                                           # ← NUEVO
+def ml_score_udf(                                                   # ← NUEVO
+    amount:         pd.Series,                                      # ← NUEVO
+    tx_type:        pd.Series,                                      # ← NUEVO
+    user_id:        pd.Series,                                      # ← NUEVO
+    destination_id: pd.Series,                                      # ← NUEVO
+    hour:           pd.Series,                                      # ← NUEVO
+) -> pd.Series:           
+    import sys                          
+    sys.path.insert(0, "/app")          
+    from app.ml_service import FraudModel                                      
+    # Reconstruir modelo desde broadcast en cada worker             # ← NUEVO
+    buf   = io.BytesIO(bc_model_bytes.value)                        # ← NUEVO
+    model = FraudModel()                                            # ← NUEVO
+    model.load_state_dict(                                          # ← NUEVO
+        torch.load(buf, map_location="cpu", weights_only=True)      # ← NUEVO
+    )                                                               # ← NUEVO
+    model.eval()                                                    # ← NUEVO
+    scaler = bc_scaler.value                                        # ← NUEVO
+
+    tx_int   = tx_type.map(TX_TYPE_MAP).fillna(1).astype("float32") # ← NUEVO
+    dest_ext = (                                                    # ← NUEVO
+        destination_id.notna() & (destination_id != user_id)       # ← NUEVO
+    ).astype("float32")                                             # ← NUEVO
+
+    # Matriz (N, 5) — todas las transacciones del batch juntas      # ← NUEVO
+    X = np.stack([                                                  # ← NUEVO
+        amount.values.astype("float32"),                            # ← NUEVO
+        tx_int.values,                                              # ← NUEVO
+        dest_ext.values,                                            # ← NUEVO
+        hour.values.astype("float32"),                              # ← NUEVO
+        np.zeros(len(amount), dtype="float32"),  # recent_tx_count se cubre en REDUCE
+    ], axis=1)                                                      # ← NUEVO
+
+    X_scaled = scaler.transform(X).astype("float32")               # ← NUEVO
+
+    with torch.no_grad():                                           # ← NUEVO
+        probs = torch.softmax(                                      # ← NUEVO
+            model(torch.tensor(X_scaled)), dim=1                    # ← NUEVO
+        ).numpy()                                                   # ← NUEVO
+
+    # 0=approved→0pts  1=flagged→50pts  2=blocked→100pts            # ← NUEVO
+    scores = np.clip(probs[:, 1] * 50 + probs[:, 2] * 100, 0, 100) # ← NUEVO
+    return pd.Series(scores.round(2))                               # ← NUEVO
+
 
 # ─────────────────────────────────────────────
 # Schema
@@ -112,17 +185,37 @@ df_rules = (
 )
 
 # ─────────────────────────────────────────────
+# Data Processing (ML inference) (MAP)                               # ← NUEVO
+# ─────────────────────────────────────────────
+
+df_ml = (                                                           # ← NUEVO
+    df_rules                                                        # ← NUEVO
+    .withColumn("hour", spark_hour(col("created_at")))              # ← NUEVO
+    .withColumn(                                                    # ← NUEVO
+        "ml_score",                                                 # ← NUEVO
+        ml_score_udf(                                               # ← NUEVO
+            col("amount"),                                          # ← NUEVO
+            col("transaction_type"),                                # ← NUEVO
+            col("user_id"),                                         # ← NUEVO
+            col("destination_id"),                                  # ← NUEVO
+            col("hour"),                                            # ← NUEVO
+        )                                                           # ← NUEVO
+    )                                                               # ← NUEVO
+)      
+
+# ─────────────────────────────────────────────
 # Data Processing (complex rules) (REDUCE)
 # ─────────────────────────────────────────────
 df_final = (
-    df_rules
+    df_ml                                                           # ← NUEVO (era df_rules)
     .groupBy(
         window(col("created_at"), "1 hour", "5 minutes"),
         col("user_id")
     )
     .agg(
         count("*").alias("tx_count"),
-        expr("sum(map_score)").alias("map_score_sum")
+        expr("sum(map_score)").alias("map_score_sum"),
+        expr("avg(ml_score)").alias("ml_score_avg")                 # ← NUEVO
     )
     .withColumn(
         "score_frequency",
@@ -130,9 +223,13 @@ df_final = (
         .when(col("tx_count") >= 3, 15)
         .otherwise(0)
     )
+    .withColumn(                                                    # ← NUEVO (era total_score directo)
+        "rules_score",                                              # ← NUEVO
+        expr("least(map_score_sum + score_frequency, 100)")         # ← NUEVO
+    )                                                               # ← NUEVO
     .withColumn(
         "total_score",
-        expr("least(map_score_sum + score_frequency, 100)")
+        expr("least(rules_score * 0.5 + ml_score_avg * 0.5, 100)") # ← NUEVO (era solo map_score_sum)
     )
     .withColumn(
         "risk_level",
@@ -142,6 +239,7 @@ df_final = (
         .otherwise("LOW")
     )
 )
+
 
 # ─────────────────────────────────────────────
 # Output to console

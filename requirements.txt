@@ -30,5 +30,8 @@ streamlit
 scikit-learn
 joblib
 torch
+numpy
+pandas
 
 kafka-python
+pyspark

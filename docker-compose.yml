@@ -8,124 +8,117 @@ services:
     build: .
     container_name: SSDLC-fastapi_app
     command: python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-
     ports:
       - "8000:8000"
-
     volumes:
       - .:/app
-
     depends_on:
       kafka:
         condition: service_healthy
-
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.5.0
-    container_name: zookeeper
-
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_LOG4J_ROOT_LOGLEVEL: ERROR
-
-    ports:
-      - "2181:2181"
 
   kafka:
-    image: confluentinc/cp-kafka:7.5.0
-    container_name: kafka
-    depends_on:
-      - zookeeper
-
-    ports:
-      - "9092:9092"
-
-    healthcheck:
-      test: ["CMD", "bash", "-c", "nc -z localhost 9092"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-
-      # 🔇 REDUCCIÓN DE LOGS
-      KAFKA_LOG4J_ROOT_LOGLEVEL: ERROR
-
-      KAFKA_LOG4J_LOGGERS: >
-        kafka=WARN,
-        kafka.controller=WARN,
-        kafka.log.LogCleaner=WARN,
-        state.change.logger=WARN,
-        kafka.producer.async.DefaultEventHandler=ERROR
-
-      KAFKA_TOOLS_LOG4J_ROOT_LOGLEVEL: ERROR
-
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-
-  consumer:
-
-    build: .
-
-    container_name: kafka_consumer
-
-    command: python -m app.streaming.consumer
-
-    depends_on:
-      kafka:
-        condition: service_healthy
-        
-    environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      KAFKA_LOG4J_ROOT_LOGLEVEL: ERROR
-
-    volumes:
-      - .:/app
+      image: confluentinc/cp-kafka:7.6.0
+      container_name: kafka
+      ports:
+        - "9092:9092"
+      healthcheck:
+        test: ["CMD", "bash", "-c", "nc -z localhost 9092"]
+        interval: 10s
+        timeout: 5s
+        retries: 10
+      command: >
+        bash -c "export CLUSTER_ID=$(kafka-storage random-uuid) &&
+        kafka-storage format -t $$CLUSTER_ID -c /etc/kafka/kraft/server.properties &&
+        /etc/confluent/docker/run"
+      environment:
+        KAFKA_NODE_ID: 1
+        KAFKA_PROCESS_ROLES: broker,controller
+        KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+        KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+        KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+        KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+        KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+        KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+        KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+        KAFKA_LOG4J_ROOT_LOGLEVEL: ERROR
+        KAFKA_TOOLS_LOG4J_ROOT_LOGLEVEL: ERROR
 
   spark-master:
     image: apache/spark:3.5.1
     container_name: spark-master
-
-    command: >
-      bash -c "
-        /opt/spark/sbin/start-master.sh &&
-        sleep 10 &&
-        mkdir -p /tmp/.ivy2 &&
-        /opt/spark/bin/spark-submit --master spark://spark-master:7077 --conf spark.jars.ivy=/tmp/.ivy2 --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1 /app/app/streaming/spark_stream.py
-      "
+    user: root
+    command: >-
+      bash -c "PYTHONUSERBASE=/tmp/pylocal pip install torch joblib 'scikit-learn==1.3.2' 'numpy<2.0' pandas sqlalchemy pyarrow --no-cache-dir --user &&
+      export PYTHONPATH=/tmp/pylocal/lib/python3.8/site-packages:$PYTHONPATH &&
+      /opt/spark/sbin/start-master.sh &&
+      sleep 10 &&
+      mkdir -p /tmp/.ivy2 &&
+      /opt/spark/bin/spark-submit --master spark://spark-master:7077 --conf spark.jars.ivy=/tmp/.ivy2 --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1 /app/app/streaming/spark_stream.py"
 
     environment:
       - SPARK_MODE=master
-
+      - PYTHONUSERBASE=/tmp/pylocal
+      - PYTHONPATH=/tmp/pylocal/lib/python3.8/site-packages:/app
+    depends_on:
+      model-trainer:
+        condition: service_completed_successfully
+      kafka-init:
+        condition: service_completed_successfully
     ports:
       - "8080:8080"
       - "7077:7077"
-
     volumes:
       - .:/app
+      - spark-pip-cache:/tmp/pylocal
 
   spark-worker:
     image: apache/spark:3.5.1
-
+    user: root
     depends_on:
       - spark-master
-
-    command: >
-      /opt/spark/bin/spark-class
-      org.apache.spark.deploy.worker.Worker
-      spark://spark-master:7077
-
+    command: >-
+      bash -c "PYTHONUSERBASE=/tmp/pylocal pip install torch joblib 'scikit-learn==1.3.2' 'numpy<2.0' pandas sqlalchemy pyarrow --no-cache-dir --user &&
+      export PYTHONPATH=/tmp/pylocal/lib/python3.8/site-packages:$PYTHONPATH &&
+      /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077"
     environment:
       - SPARK_MODE=worker
       - SPARK_MASTER_URL=spark://spark-master:7077
-
-      # opcional
       - SPARK_WORKER_MEMORY=2G
       - SPARK_WORKER_CORES=2
-
+      - PYTHONUSERBASE=/tmp/pylocal
+      - PYTHONPATH=/tmp/pylocal/lib/python3.8/site-packages:/app
     volumes:
       - .:/app
+      - spark-pip-cache:/tmp/pylocal
+
+  model-trainer:
+    build: .
+    container_name: model_trainer
+    command: >-
+      bash -c "pip install 'scikit-learn==1.3.2' 'numpy<2.0' -q &&
+      python train_model.py"
+    volumes:
+      - .:/app
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command: >
+      bash -c "kafka-topics --create
+      --topic transactions
+      --bootstrap-server kafka:9092
+      --partitions 1
+      --replication-factor 1
+      --if-not-exists"
+    restart: on-failure
+volumes:
+  spark-pip-cache:
