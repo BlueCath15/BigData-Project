@@ -10,6 +10,7 @@ from fastapi import (
 from pydantic import BaseModel
 
 from app.documents.services import upload_document
+from app.documents.transaction_loader import process_document
 
 router = APIRouter(
     prefix="/documents",
