@@ -27,7 +27,8 @@ from datetime import datetime, timedelta
 # Config
 # ─────────────────────────────────────────────
 
-OUTPUT_PATH   = "app/seed_data.parquet"
+OUTPUT_PATH   = "/tmp/seed_data.parquet"
+S3_SEED_PATH  = "s3://fraud-detection-992382522951/seed/seed_data.parquet"
 N_ROWS        = 10_000
 RANDOM_SEED   = 42
 
@@ -174,3 +175,9 @@ if __name__ == "__main__":
     df = build_dataframe()
     df.to_parquet(OUTPUT_PATH, index=False)
     print(f"[seed-generator] {len(df):,} filas guardadas en {OUTPUT_PATH}")
+
+    import subprocess
+    subprocess.run([    
+        "aws", "s3", "cp", OUTPUT_PATH, S3_SEED_PATH
+    ])
+    print(f"[seed-generator] Subido a {S3_SEED_PATH}")

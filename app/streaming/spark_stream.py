@@ -10,9 +10,14 @@ from pyspark.sql.types import (
     StringType, DoubleType, TimestampType
 )
 from pyspark.ml import PipelineModel
+import os
+import sys
 
 import sys
-sys.path.insert(0, "/app")
+sys.path.insert(0, "/app") 
+
+# ── Kafka bootstrap ────────────────────────────
+KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
 
 # ─────────────────────────────────────────────
 # Spark Session
@@ -29,8 +34,9 @@ spark.sparkContext.setLogLevel("ERROR")
 # Cargar modelo Spark ML
 # ─────────────────────────────────────────────
 
-fraud_pipeline = PipelineModel.load("/app/app/fraud_rf_model")
-
+fraud_pipeline = PipelineModel.load(
+    "s3://fraud-detection-992382522951/models/fraud_rf_model"
+) 
 # ─────────────────────────────────────────────
 # Schema
 # ─────────────────────────────────────────────
@@ -52,7 +58,7 @@ schema = StructType([
 df_raw = (
     spark.readStream
     .format("kafka")
-    .option("kafka.bootstrap.servers", "kafka:9092")
+    .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP)   # ← cambiar
     .option("subscribe", "transactions")
     .option("startingOffsets", "latest")
     .load()
@@ -169,21 +175,21 @@ query_console = (
 
 query_sink = (
     df_ml
-    .select(                                    # ← solo columnas base
-        "user_id", "amount", "transaction_type",
-        "currency", "destination_id", "ip_address",
-        "created_at"
-    )
     .withColumn("label",
         when(col("ml_score") >= 70, 2.0)
         .when(col("ml_score") >= 40, 1.0)
         .otherwise(0.0)
     )
+    .select(
+        "user_id", "amount", "transaction_type",
+        "currency", "destination_id", "ip_address",
+        "created_at", "label", "hour"
+    )
     .writeStream
     .format("parquet")
     .outputMode("append")
-    .option("path", "/app/app/training_data/")
-    .option("checkpointLocation", "/app/app/checkpoints/sink/")
+    .option("path", "s3://fraud-detection-992382522951/training-data/")
+    .option("checkpointLocation", "s3://fraud-detection-992382522951/checkpoints/sink/")
     .partitionBy("hour")
     .start()
 )

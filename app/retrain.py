@@ -31,11 +31,11 @@ from pyspark.ml.evaluation import MulticlassClassificationEvaluator
 # Config
 # ─────────────────────────────────────────────
 
-MODEL_PATH    = "/app/app/fraud_rf_model"
-BACKUP_DIR    = "/app/app/backups"
-DATA_PATH     = "/app/app/training_data/"
-SEED_PATH     = "/app/app/seed_data.parquet"
-LOG_PATH      = "/app/logs/retrain.log"
+MODEL_PATH = "s3://ssdlc-fraud-detection-992382522951/models/fraud_rf_model"
+BACKUP_DIR = "s3://ssdlc-fraud-detection-992382522951/backups/"
+DATA_PATH  = "s3://ssdlc-fraud-detection-992382522951/training-data/"
+SEED_PATH  = "s3://ssdlc-fraud-detection-992382522951/seed/seed_data.parquet"
+LOG_PATH   = "s3://ssdlc-fraud-detection-992382522951/logs/retrain.log"
 
 MIN_ROWS      = 1000     # mínimo de filas para entrenar con datos reales
 F1_THRESHOLD  = 0.70     # F1 mínimo para reemplazar el modelo en producción
@@ -211,15 +211,24 @@ def evaluate(model, val_df):
 # ─────────────────────────────────────────────
 
 def replace_model(new_model):
-    os.makedirs(BACKUP_DIR, exist_ok=True)
+    import subprocess
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    backup_path = f"{BACKUP_DIR}/fraud_rf_model_{timestamp}"
 
-    if os.path.exists(MODEL_PATH):
-        backup_path = os.path.join(BACKUP_DIR, f"fraud_rf_model_{timestamp}")
-        shutil.copytree(MODEL_PATH, backup_path)
-        shutil.rmtree(MODEL_PATH)
+    # Backup
+    try:
+        new_model.save(backup_path)
         log.info(f"Backup guardado en: {backup_path}")
+    except Exception as e:
+        log.warning(f"No se pudo guardar backup: {e}")
 
+    # Borrar modelo anterior en S3
+    subprocess.run(
+        ["aws", "s3", "rm", MODEL_PATH, "--recursive"],
+        capture_output=True
+    )
+
+    # Guardar nuevo modelo
     new_model.save(MODEL_PATH)
     log.info(f"Nuevo modelo guardado en: {MODEL_PATH}")
 

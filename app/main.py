@@ -12,6 +12,9 @@ from fastapi import FastAPI
 from app.documents.routers import router
 from app.streaming.routers import router as streaming_router
 
+import os
+KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+
 app = FastAPI(title="Fraud Detection System API")
 
 app.include_router(router)

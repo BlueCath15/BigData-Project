@@ -12,7 +12,7 @@ provider "aws" {
 }
 
 # ─────────────────────────────────────────────
-# S3
+# S3 — almacenamiento compartido
 # ─────────────────────────────────────────────
 module "s3" {
   source      = "./modules/s3"
@@ -20,37 +20,23 @@ module "s3" {
 }
 
 # ─────────────────────────────────────────────
-# MSK (Kafka)
+# EC2 — FastAPI + Kafka + cron
 # ─────────────────────────────────────────────
-module "msk" {
-  source     = "./modules/msk"
-  vpc_id     = var.vpc_id
-  subnet_ids = var.subnet_ids
-  sg_id      = var.default_sg_id
+module "ec2" {
+  source      = "./modules/ec2"
+  vpc_id      = var.vpc_id
+  subnet_id   = var.subnet_id
+  bucket_name = var.bucket_name
+  depends_on  = [module.s3]
 }
 
 # ─────────────────────────────────────────────
-# EMR (Spark)
+# EMR — Spark Streaming
 # ─────────────────────────────────────────────
 module "emr" {
-  source        = "./modules/emr"
-  bucket_name   = var.bucket_name
-  subnet_id     = var.subnet_ids[0]
-  master_sg_id  = var.emr_master_sg_id
-  slave_sg_id   = var.emr_slave_sg_id
-  msk_bootstrap = module.msk.bootstrap_brokers
-  depends_on    = [module.s3, module.msk]
-}
-
-# ─────────────────────────────────────────────
-# ECS Fargate (FastAPI)
-# ─────────────────────────────────────────────
-module "ecs" {
-  source       = "./modules/ecs"
-  vpc_id       = var.vpc_id
-  subnet_ids   = var.subnet_ids
-  sg_id        = var.default_sg_id
-  bucket_name  = var.bucket_name
-  msk_bootstrap = module.msk.bootstrap_brokers
-  depends_on   = [module.msk]
+  source           = "./modules/emr"
+  bucket_name      = var.bucket_name
+  subnet_id        = var.subnet_id
+  kafka_private_ip = module.ec2.private_ip
+  depends_on       = [module.s3, module.ec2]
 }
