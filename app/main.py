@@ -10,13 +10,11 @@ Arranca con:
 from fastapi import FastAPI
 from app.documents.models import create_tables
 from app.documents.routers import router
-from app.transactions.routers import router as transaction_router
 from app.streaming.routers import router as streaming_router
 
 app = FastAPI(title="Fraud Detection System API")
 
 app.include_router(router)
-app.include_router(transaction_router)
 app.include_router(streaming_router)
 
 @app.get("/")

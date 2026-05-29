@@ -1,0 +1,15 @@
+.git
+.github
+terraform
+terraform.exe
+logs
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.venv
+venv
+env
+database.db
+password.txt
+*.log

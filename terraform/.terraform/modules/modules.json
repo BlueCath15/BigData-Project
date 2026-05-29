@@ -1,0 +1,1 @@
+{"Modules":[{"Key":"","Source":"","Dir":"."},{"Key":"ecs","Source":"./modules/ecs","Dir":"modules/ecs"},{"Key":"emr","Source":"./modules/emr","Dir":"modules/emr"},{"Key":"eventbridge","Source":"./modules/eventbridge","Dir":"modules/eventbridge"},{"Key":"msk","Source":"./modules/msk","Dir":"modules/msk"},{"Key":"s3","Source":"./modules/s3","Dir":"modules/s3"}]}

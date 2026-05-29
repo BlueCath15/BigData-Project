@@ -8,12 +8,14 @@ Router de documentos — endpoints
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, UploadFile, File, Query
+from fastapi import APIRouter, Depends, UploadFile, File, Query,BackgroundTasks
+from fastapi import HTTPException
 from pydantic import BaseModel # Validacion de Datos
 from sqlalchemy.orm import Session # SQL
 
 from app.documents.models import get_db
 from app.documents.services import upload_document, get_document, list_documents
+from app.documents.transaction_loader import process_document
 
 import shutil, os # Automated Data management
 
@@ -47,17 +49,24 @@ class DocumentListResponse(BaseModel):
 
 @router.post("/upload", response_model=UploadResponse, status_code=201)
 async def upload_document_endpoint(
-    file: UploadFile = File(..., description="Archivo PDF, DOCX, TXT o XLSX"),
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
     # 1. Guardar metadatos en SQL
     doc = await upload_document(file, db)
-    
-    return UploadResponse(
-        message="Documento subido exitosamente.",
-        document=DocumentResponse.model_validate(doc),
-        indexing_status= "No indexado"
+    # 2. Procesar el documento y publicar transacciones (Kafka)
+    background_tasks.add_task(
+        process_document,
+        doc.file_path,
+        doc.file_format
     )
+    
+    return {
+        "message": "Documento procesado",
+        "document_id": doc.id,
+        "transactions_sent": count
+    }
 
 
 @router.get("/{doc_id}", response_model=DocumentResponse)

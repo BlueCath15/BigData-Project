@@ -29,7 +29,6 @@ streamlit
 
 scikit-learn
 joblib
-torch
 numpy
 pandas
 

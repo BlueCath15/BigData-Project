@@ -1,9 +1,33 @@
 version: "3.9"
 
 # docker compose up --scale spark-worker=3
+# docker exec retrain-cron /opt/spark/bin/spark-submit --master spark://spark-master:7077 /app/app/retrain.py
+# docker compose up -d --scale spark-worker=2
+
+# ─────────────────────────────────────────────
+# Orden de arranque
+#
+#  kafka
+#    └── kafka-init ──────────────────────────────────────┐
+#                                                          ↓
+#  seed-generator ──► spark-initial-train ──► spark-master ──► spark-worker(xN)
+#                                                          │
+#  fastapi (solo espera kafka)                             └──► retrain-cron
+# ─────────────────────────────────────────────
+
+x-spark-common: &spark-common
+  image: apache/spark:3.5.1
+  user: root
+  volumes:
+    - .:/app
+    - spark-pip-cache:/tmp/pylocal
+  environment:
+    - PYTHONUSERBASE=/tmp/pylocal
+    - PYTHONPATH=/tmp/pylocal/lib/python3.8/site-packages:/app
 
 services:
 
+  # ── App ──────────────────────────────────────────────
   fastapi:
     build: .
     container_name: SSDLC-fastapi_app
@@ -18,94 +42,33 @@ services:
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
 
+  # ── Kafka ─────────────────────────────────────────────
   kafka:
-      image: confluentinc/cp-kafka:7.6.0
-      container_name: kafka
-      ports:
-        - "9092:9092"
-      healthcheck:
-        test: ["CMD", "bash", "-c", "nc -z localhost 9092"]
-        interval: 10s
-        timeout: 5s
-        retries: 10
-      command: >
-        bash -c "export CLUSTER_ID=$(kafka-storage random-uuid) &&
-        kafka-storage format -t $$CLUSTER_ID -c /etc/kafka/kraft/server.properties &&
-        /etc/confluent/docker/run"
-      environment:
-        KAFKA_NODE_ID: 1
-        KAFKA_PROCESS_ROLES: broker,controller
-        KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-        KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-        KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-        KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
-        KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-        KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-        KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-        KAFKA_LOG4J_ROOT_LOGLEVEL: ERROR
-        KAFKA_TOOLS_LOG4J_ROOT_LOGLEVEL: ERROR
-
-  spark-master:
-    image: apache/spark:3.5.1
-    container_name: spark-master
-    user: root
-    command: >-
-      bash -c "PYTHONUSERBASE=/tmp/pylocal pip install torch joblib 'scikit-learn==1.3.2' 'numpy<2.0' pandas sqlalchemy pyarrow --no-cache-dir --user &&
-      export PYTHONPATH=/tmp/pylocal/lib/python3.8/site-packages:$PYTHONPATH &&
-      /opt/spark/sbin/start-master.sh &&
-      sleep 10 &&
-      mkdir -p /tmp/.ivy2 &&
-      /opt/spark/bin/spark-submit --master spark://spark-master:7077 --conf spark.jars.ivy=/tmp/.ivy2 --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1 /app/app/streaming/spark_stream.py"
-
-    environment:
-      - SPARK_MODE=master
-      - PYTHONUSERBASE=/tmp/pylocal
-      - PYTHONPATH=/tmp/pylocal/lib/python3.8/site-packages:/app
-    depends_on:
-      model-trainer:
-        condition: service_completed_successfully
-      kafka-init:
-        condition: service_completed_successfully
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka
     ports:
-      - "8080:8080"
-      - "7077:7077"
-    volumes:
-      - .:/app
-      - spark-pip-cache:/tmp/pylocal
-
-  spark-worker:
-    image: apache/spark:3.5.1
-    user: root
-    depends_on:
-      - spark-master
-    command: >-
-      bash -c "PYTHONUSERBASE=/tmp/pylocal pip install torch joblib 'scikit-learn==1.3.2' 'numpy<2.0' pandas sqlalchemy pyarrow --no-cache-dir --user &&
-      export PYTHONPATH=/tmp/pylocal/lib/python3.8/site-packages:$PYTHONPATH &&
-      /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077"
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "nc -z localhost 9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    command: >
+      bash -c "export CLUSTER_ID=$(kafka-storage random-uuid) &&
+      (kafka-storage format -t $$CLUSTER_ID -c /etc/kafka/kraft/server.properties || true) &&
+      /etc/confluent/docker/run"
     environment:
-      - SPARK_MODE=worker
-      - SPARK_MASTER_URL=spark://spark-master:7077
-      - SPARK_WORKER_MEMORY=2G
-      - SPARK_WORKER_CORES=2
-      - PYTHONUSERBASE=/tmp/pylocal
-      - PYTHONPATH=/tmp/pylocal/lib/python3.8/site-packages:/app
-    volumes:
-      - .:/app
-      - spark-pip-cache:/tmp/pylocal
-
-  model-trainer:
-    build: .
-    container_name: model_trainer
-    command: >-
-      bash -c "pip install 'scikit-learn==1.3.2' 'numpy<2.0' -q &&
-      python train_model.py"
-    volumes:
-      - .:/app
-    depends_on:
-      kafka:
-        condition: service_healthy
-    environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_LOG4J_ROOT_LOGLEVEL: ERROR
+      KAFKA_TOOLS_LOG4J_ROOT_LOGLEVEL: ERROR
 
   kafka-init:
     image: confluentinc/cp-kafka:7.6.0
@@ -120,5 +83,92 @@ services:
       --replication-factor 1
       --if-not-exists"
     restart: on-failure
+
+  # ── Seed (datos sintéticos iniciales) ─────────────────
+  seed-generator:
+    build: .
+    container_name: seed_generator
+    command: python generate_seed.py
+    volumes:
+      - .:/app
+    # No depende de nada — solo necesita el filesystem
+
+  # ── Entrenamiento inicial del modelo ──────────────────
+  spark-initial-train:
+    <<: *spark-common
+    container_name: spark-initial-train
+    command: >-
+      bash -c "
+      if [ -d /app/app/fraud_rf_model ]; then
+        echo '[spark-initial-train] Modelo ya existe — omitiendo entrenamiento.';
+        exit 0;
+      fi &&
+      bash /app/scripts/spark-install.sh &&
+      /opt/spark/bin/spark-submit
+      --master local[*]
+      /app/app/retrain.py"
+    depends_on:
+      seed-generator:
+        condition: service_completed_successfully
+      # No necesita kafka — retrain.py solo lee/escribe parquet
+
+  # ── Spark Master + streaming ───────────────────────────
+  spark-master:
+    <<: *spark-common
+    container_name: spark-master
+    command: >-
+      bash -c "bash /app/scripts/spark-install.sh &&
+      /opt/spark/sbin/start-master.sh &&
+      sleep 10 &&
+      mkdir -p /tmp/.ivy2 &&
+      /opt/spark/bin/spark-submit
+      --master spark://spark-master:7077
+      --conf spark.jars.ivy=/tmp/.ivy2
+      --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1
+      /app/app/streaming/spark_stream.py"
+    depends_on:
+      spark-initial-train:
+        condition: service_completed_successfully
+      kafka-init:
+        condition: service_completed_successfully
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+
+  # ── Spark Workers ──────────────────────────────────────
+  spark-worker:
+    <<: *spark-common
+    command: >-
+      bash -c "bash /app/scripts/spark-install.sh &&
+      /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077"
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_MEMORY=2G
+      - SPARK_WORKER_CORES=2
+      - PYTHONUSERBASE=/tmp/pylocal
+      - PYTHONPATH=/tmp/pylocal/lib/python3.8/site-packages:/app
+    depends_on:
+      - spark-master
+
+  # ── Reentrenamiento nocturno (2am) ─────────────────────
+  retrain-cron:
+    <<: *spark-common
+    container_name: retrain-cron
+    command: >-
+      bash -c "bash /app/scripts/spark-install.sh &&
+      apt-get update -qq &&
+      echo '#!/bin/sh' > /usr/sbin/policy-rc.d &&
+      echo 'exit 0' >> /usr/sbin/policy-rc.d &&
+      chmod +x /usr/sbin/policy-rc.d &&
+      apt-get install -y cron --no-install-recommends -qq &&
+      rm -f /var/run/crond.pid &&
+      printenv | grep -E 'PYTHON|SPARK' >> /etc/environment &&
+      echo '0 2 * * * root /opt/spark/bin/spark-submit --master spark://spark-master:7077 /app/app/retrain.py >> /app/logs/retrain.log 2>&1' > /etc/cron.d/retrain &&
+      chmod 0644 /etc/cron.d/retrain &&
+      cron -f"
+    depends_on:
+      - spark-master
+
 volumes:
   spark-pip-cache:
