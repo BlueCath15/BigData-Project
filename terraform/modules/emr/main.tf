@@ -43,7 +43,7 @@ resource "aws_emr_cluster" "main" {
     }
   }
 
-  configurations_json = jsonencode([
+  configurations_json = jsonencode([  
     {
       Classification = "spark-defaults"
       Properties = {
@@ -51,6 +51,13 @@ resource "aws_emr_cluster" "main" {
         "spark.executorEnv.KAFKA_BOOTSTRAP_SERVERS"       = "${var.kafka_private_ip}:9092"
         "spark.yarn.appMasterEnv.S3_BUCKET"               = var.bucket_name
         "spark.executorEnv.S3_BUCKET"                     = var.bucket_name
+      }
+    },
+    {
+      Classification = "yarn-site"
+      Properties = {
+        "yarn.log-aggregation-enable"       = "true"
+        "yarn.log-aggregation.retain-seconds" = "86400"
       }
     }
   ])

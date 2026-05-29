@@ -7,13 +7,15 @@ from fastapi import UploadFile, HTTPException
 # Configuración
 # ─────────────────────────────────────────────
 
-ALLOWED_EXTENSIONS = {"pdf", "docx", "txt", "xlsx"}
+ALLOWED_EXTENSIONS = {"pdf", "docx", "txt", "xlsx", "json", "csv"}
 
 ALLOWED_CONTENT_TYPES = {
     "application/pdf": "pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
     "text/plain": "txt",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "application/json": "json",
+    "text/csv": "csv"
 }
 
 STORAGE_DIR = Path("app/data")

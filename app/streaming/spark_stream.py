@@ -1,3 +1,7 @@
+# yarn application -list -appStates ALL
+# # yarn logs -applicationId application_1780067033384_0001 2>/dev/null | grep -A 50 "Batch:"
+
+
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col, from_json, window, count,
